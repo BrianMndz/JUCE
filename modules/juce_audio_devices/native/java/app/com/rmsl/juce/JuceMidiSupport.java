@@ -30,11 +30,15 @@ import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothProfile;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.BroadcastReceiver;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
+import android.content.IntentFilter;
 import android.media.midi.MidiDevice;
 import android.media.midi.MidiDeviceInfo;
 import android.media.midi.MidiDeviceStatus;
@@ -49,11 +53,16 @@ import android.os.ParcelUuid;
 import android.util.Log;
 import android.util.Pair;
 
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Set;
 import java.util.HashSet;
 import java.util.List;
 
@@ -62,6 +71,34 @@ import static android.content.Context.BLUETOOTH_SERVICE;
 
 public class JuceMidiSupport
 {
+// Define Bluetooth Callback for when it is switched off
+    BluetoothAdapter adapterStatusCheck = BluetoothAdapter.getDefaultAdapter ();
+
+    private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+
+            String action = intent.getAction();
+
+            // It means the user has changed his bluetooth state.
+            if (action.equals(BluetoothAdapter.ACTION_STATE_CHANGED)) {
+
+                if (adapterStatusCheck.getState() == BluetoothAdapter.STATE_TURNING_OFF) {
+                    // The user bluetooth is turning off yet, but it is not disabled yet.
+                    return;
+                }
+
+                if (adapterStatusCheck.getState() == BluetoothAdapter.STATE_OFF) {
+                    // The user bluetooth is already disabled.
+                    return;
+                }
+
+            }
+        }
+
+    };
+
     //==============================================================================
     public interface JuceMidiPort
     {
@@ -151,6 +188,9 @@ public class JuceMidiSupport
 
         public boolean pairBluetoothMidiDevice (String address)
         {
+            Log.i("JUCE","Starting Connection to BLE Device.");
+            Log.i("JUCE","Test Test");
+
             BluetoothDevice btDevice = getDefaultBluetoothAdapter (appContext).getRemoteDevice (address);
 
             if (btDevice == null)
@@ -162,9 +202,12 @@ public class JuceMidiSupport
             return getAndroidMidiDeviceManager (appContext).pairBluetoothDevice (btDevice);
         }
 
-        public void unpairBluetoothMidiDevice (String address)
+        public boolean unpairBluetoothMidiDevice (String address)
         {
-            getAndroidMidiDeviceManager (appContext).unpairBluetoothDevice (address);
+            boolean retval;
+            retval = getAndroidMidiDeviceManager (appContext).unpairBluetoothDevice (address);
+
+            return retval;
         }
 
         public void onScanFailed (int errorCode)
@@ -431,10 +474,26 @@ public class JuceMidiSupport
 
             public void onConnectionStateChange (BluetoothGatt gatt, int status, int newState)
             {
+
+                Log.d("JUCE","========== GATT New State");
+                Log.d("JUCE","GATT Status: " + newState);
+                if ( status != BluetoothGatt.GATT_SUCCESS ) {
+                    Log.d("JUCE","GATT NOT SECCESSFULL");
+                }
+
                 if (newState == BluetoothProfile.STATE_CONNECTED)
                 {
+Log.d("JUCE","BLE Device " + gatt.getDevice().getAddress() + " GATT STATUS_CONNECTED");
+
                     gatt.requestConnectionPriority (BluetoothGatt.CONNECTION_PRIORITY_HIGH);
                     owner.pairBluetoothDeviceStepTwo (gatt.getDevice ());
+
+                }else if (newState == BluetoothProfile.STATE_DISCONNECTED)
+                {
+
+                    Log.d("JUCE","BLE Device " + gatt.getDevice().getAddress() + " GATT STATUS_DISCONNECTED");
+                    unpairBluetoothDevice(gatt.getDevice().getAddress());
+
                 }
             }
 
@@ -694,14 +753,20 @@ public class JuceMidiSupport
             {
                 if (!address.isEmpty ())
                 {
-                    if (findMidiDeviceForBluetoothAddress (address) != null)
+                    if (findMidiDeviceForBluetoothAddress (address) != null){
+                        Log.d("JUCE","BLE Device is listed as MIDI device");
                         return 1;
+                    }
 
-                    if (btDevicesPairing.containsKey (address))
+                    if (btDevicesPairing.containsKey (address)) {
+                        Log.d("JUCE","BLE Device is pairing");
                         return 2;
+                    }
 
-                    if (findOpenTaskForBluetoothAddress (address) != null)
+                    if (findOpenTaskForBluetoothAddress (address) != null) {
+                        Log.d("JUCE","BLE Device has a task open");
                         return 2;
+                    }
                 }
             }
 
@@ -710,24 +775,35 @@ public class JuceMidiSupport
 
         public boolean pairBluetoothDevice (BluetoothDevice btDevice)
         {
+
+            Log.d("JUCE","BLE Device - Attempting Pairing");
+
             String btAddress = btDevice.getAddress ();
-            if (btAddress.isEmpty ())
+            if (btAddress.isEmpty ()){
+                Log.d("JUCE","BLE Device unavailable - Cannot connect");
                 return false;
+            }
 
             synchronized (MidiDeviceManager.class)
             {
-                if (getBluetoothDeviceStatus (btAddress) != 0)
+                if (getBluetoothDeviceStatus (btAddress) != 0) {
+                    Log.d("JUCE","BLE Device is busy - Cannot connect");
                     return false;
+                }
 
-
+                Log.d("JUCE","Add device to Pairing List");
                 btDevicesPairing.put (btDevice.getAddress (), null);
-                BluetoothGatt gatt = btDevice.connectGatt (appContext.getApplicationContext (), true, new DummyBluetoothGattCallback (this));
+                
+                Log.d("JUCE","Connecting GATT");
+                BluetoothGatt gatt = btDevice.connectGatt (appContext.getApplicationContext (), false, new DummyBluetoothGattCallback (this), 2);
 
                 if (gatt != null)
                 {
+                    Log.d("JUCE","GATT not null");
                     btDevicesPairing.put (btDevice.getAddress (), gatt);
                 } else
                 {
+                    Log.d("JUCE","GATT null");
                     pairBluetoothDeviceStepTwo (btDevice);
                 }
             }
@@ -740,33 +816,15 @@ public class JuceMidiSupport
             manager.openBluetoothDevice (btDevice, this, null);
         }
 
-        public void unpairBluetoothDevice (String address)
+        public boolean unpairBluetoothDevice (String address)
         {
+            Log.i("JUCE","Unpairing device - new");
+
             if (address.isEmpty ())
-                return;
+                return false;
 
             synchronized (MidiDeviceManager.class)
             {
-                if (btDevicesPairing.containsKey (address))
-                {
-                    BluetoothGatt gatt = btDevicesPairing.get (address);
-                    if (gatt != null)
-                    {
-                        gatt.disconnect ();
-                        gatt.close ();
-                    }
-
-                    btDevicesPairing.remove (address);
-                }
-
-                MidiDeviceOpenTask openTask = findOpenTaskForBluetoothAddress (address);
-                if (openTask != null)
-                {
-                    int deviceID = openTask.getID ();
-                    openTask.cancel ();
-                    openTasks.remove (deviceID);
-                }
-
                 Pair<MidiDevice, BluetoothGatt> midiDevicePair = findMidiDeviceForBluetoothAddress (address);
                 if (midiDevicePair != null)
                 {
@@ -775,12 +833,38 @@ public class JuceMidiSupport
 
                     try
                     {
+                        Log.i("JUCE","Unpairing - closing Midi device");
                         midiDevice.close ();
                     } catch (IOException exception)
                     {
                         Log.d ("JUCE", "IOException while closing midi device");
                     }
                 }
+
+                Log.i("JUCE","Unpairing - gatt");
+                if (btDevicesPairing.containsKey (address))
+                {
+                    Log.i("JUCE","Unpairing - finding gatt");
+                    BluetoothGatt gatt = btDevicesPairing.get (address);
+                    if (gatt != null)
+                    {
+                        Log.i("JUCE","Unpairing - disconnecting gatt");
+                        gatt.disconnect ();
+                        gatt.close ();
+                    }
+
+                    btDevicesPairing.remove (address);
+                }
+
+                Log.i("JUCE","Unpairing - disconnecting Open Task");
+                MidiDeviceOpenTask openTask = findOpenTaskForBluetoothAddress (address);
+                if (openTask != null) {
+                    int deviceID = openTask.getID();
+                    openTask.cancel();
+                    openTasks.remove(deviceID);
+                }
+
+                return true;
             }
         }
 
